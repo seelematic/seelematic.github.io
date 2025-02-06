@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as faceapi from 'face-api.js';
-import * as bodyPix from '@tensorflow-models/body-pix';
+//import * as bodyPix from '@tensorflow-models/body-pix';
 
 // Check the URL for ?debug=true and set the debug flag accordingly.
 const debug = new URLSearchParams(window.location.search).get('debug') === 'true';
@@ -238,15 +238,15 @@ function App() {
       .catch(err => console.error("Error loading models", err));
   }, []);
 
-  // NEW: Load segmentation model (e.g. BodyPix)
-  useEffect(() => {
-    async function loadSegModel() {
-      const model = await bodyPix.load();
-      setSegmentationModel(model);
-      console.log("Segmentation model loaded");
-    }
-    loadSegModel();
-  }, []);
+  // // NEW: Load segmentation model (e.g. BodyPix)
+  // useEffect(() => {
+  //   async function loadSegModel() {
+  //     const model = await bodyPix.load();
+  //     setSegmentationModel(model);
+  //     console.log("Segmentation model loaded");
+  //   }
+  //   loadSegModel();
+  // }, []);
 
   // NEW: Automatically load default face targets from the public/faces folder.
   useEffect(() => {
@@ -398,33 +398,33 @@ function App() {
 
         // Compute the head boundary polygon using the segmentation model and clip the face polygon.
         let limitedPolygon = facePolygon;
-        if (segmentationModel) {
-          try {
-            console.log("Computing head boundary polygon");
-            const headPolygon = await computeHeadBoundaryPolygon(img, centroid, segmentationModel);
-            console.log("Head boundary polygon computed");
-            const clippedPolygon = polygonIntersection(facePolygon, headPolygon);
-            console.log("Clipped polygon computed");
-            if (clippedPolygon.length > 0) {
-              limitedPolygon = clippedPolygon;
-            } else {
-              console.warn("Clipping result is empty, using original face polygon.");
-            }
-            if (debug) {
-              console.log('Face polygon:', facePolygon);
-              console.log('Head polygon:', headPolygon);
-              console.log('Clipped polygon:', clippedPolygon);
+        // if (segmentationModel) {
+        //   try {
+        //     console.log("Computing head boundary polygon");
+        //     const headPolygon = await computeHeadBoundaryPolygon(img, centroid, segmentationModel);
+        //     console.log("Head boundary polygon computed");
+        //     const clippedPolygon = polygonIntersection(facePolygon, headPolygon);
+        //     console.log("Clipped polygon computed");
+        //     if (clippedPolygon.length > 0) {
+        //       limitedPolygon = clippedPolygon;
+        //     } else {
+        //       console.warn("Clipping result is empty, using original face polygon.");
+        //     }
+        //     if (debug) {
+        //       console.log('Face polygon:', facePolygon);
+        //       console.log('Head polygon:', headPolygon);
+        //       console.log('Clipped polygon:', clippedPolygon);
 
-              // Draw debug overlays on the main canvas.
-              // facePolygon in red, headPolygon in green, clipped polygon in blue.
-              drawPolygon(ctx, facePolygon, 'red');
-              drawPolygon(ctx, headPolygon, 'green');
-              drawPolygon(ctx, clippedPolygon, 'blue');
-            }
-          } catch (error) {
-            console.warn("Error computing head boundary polygon:", error);
-          }
-        }
+        //       // Draw debug overlays on the main canvas.
+        //       // facePolygon in red, headPolygon in green, clipped polygon in blue.
+        //       drawPolygon(ctx, facePolygon, 'red');
+        //       drawPolygon(ctx, headPolygon, 'green');
+        //       drawPolygon(ctx, clippedPolygon, 'blue');
+        //     }
+        //   } catch (error) {
+        //     console.warn("Error computing head boundary polygon:", error);
+        //   }
+        // }
     
         // Recalculate centroid for the limited polygon.
         let limitedSumX = 0, limitedSumY = 0;
