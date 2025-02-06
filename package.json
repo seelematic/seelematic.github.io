@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "face-api.js": "^0.22.2"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0"
+  }
+}
