@@ -570,32 +570,65 @@ function App() {
             blurCanvas.width = adjWidth;
             blurCanvas.height = adjHeight;
             const blurCtx = blurCanvas.getContext('2d');
-            // Apply a light Gaussian blur filter.
-            blurCtx.filter = 'blur(4px)';
-            // Clip to the polygon
-            blurCtx.save();
-            blurCtx.beginPath();
-            translatedPolygon.forEach((pt, i) => {
-              if (i === 0) blurCtx.moveTo(pt.x, pt.y);
-              else blurCtx.lineTo(pt.x, pt.y);
-            });
-            blurCtx.closePath();
-            blurCtx.clip();
-            // Draw the existing composite canvas into the blur canvas.
-            blurCtx.drawImage(compCanvas, 0, 0);
-            blurCtx.restore();
-            
-            // Overlay the blurred result back onto the composite canvas.
-            compCtx.save();
-            compCtx.beginPath();
-            translatedPolygon.forEach((pt, i) => {
-              if (i === 0) compCtx.moveTo(pt.x, pt.y);
-              else compCtx.lineTo(pt.x, pt.y);
-            });
-            compCtx.closePath();
-            compCtx.clip();
-            compCtx.drawImage(blurCanvas, 0, 0);
-            compCtx.restore();
+
+            if (typeof blurCtx.filter !== 'undefined') {
+              // Built-in blur filter supported – use it (desktop-friendly)
+              blurCtx.filter = 'blur(4px)';
+              blurCtx.save();
+              blurCtx.beginPath();
+              translatedPolygon.forEach((pt, i) => {
+                if (i === 0) blurCtx.moveTo(pt.x, pt.y);
+                else blurCtx.lineTo(pt.x, pt.y);
+              });
+              blurCtx.closePath();
+              blurCtx.clip();
+              blurCtx.drawImage(compCanvas, 0, 0);
+              blurCtx.restore();
+
+              // Overlay the blurred result back onto the composite canvas.
+              compCtx.save();
+              compCtx.beginPath();
+              translatedPolygon.forEach((pt, i) => {
+                if (i === 0) compCtx.moveTo(pt.x, pt.y);
+                else compCtx.lineTo(pt.x, pt.y);
+              });
+              compCtx.closePath();
+              compCtx.clip();
+              compCtx.drawImage(blurCanvas, 0, 0);
+              compCtx.restore();
+            } else {
+              // Fallback for mobile browsers lacking support for ctx.filter.
+              // Simulate a blur by drawing the image multiple times with slight offsets.
+              const tempCanvas = document.createElement('canvas');
+              tempCanvas.width = adjWidth;
+              tempCanvas.height = adjHeight;
+              const tempCtx = tempCanvas.getContext('2d');
+              tempCtx.drawImage(compCanvas, 0, 0);
+
+              // Clear the area where the blur will be applied.
+              compCtx.clearRect(0, 0, adjWidth, adjHeight);
+
+              // Clip to the polygon area on compCtx.
+              compCtx.save();
+              compCtx.beginPath();
+              translatedPolygon.forEach((pt, i) => {
+                if (i === 0) compCtx.moveTo(pt.x, pt.y);
+                else compCtx.lineTo(pt.x, pt.y);
+              });
+              compCtx.closePath();
+              compCtx.clip();
+
+              // Loop over small offsets to simulate a blur effect.
+              const offsets = [-2, -1, 0, 1, 2];
+              offsets.forEach(dx => {
+                offsets.forEach(dy => {
+                  compCtx.globalAlpha = 0.1; // lowered opacity for smooth accumulation
+                  compCtx.drawImage(tempCanvas, dx, dy);
+                });
+              });
+              compCtx.globalAlpha = 1.0;
+              compCtx.restore();
+            }
           }
         }
         
