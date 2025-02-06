@@ -7,6 +7,8 @@ const debug = new URLSearchParams(window.location.search).get('debug') === 'true
 console.log("DEBUG flag is", debug);
 const fillSolidColor = new URLSearchParams(window.location.search).get('fill') !== 'false';
 console.log("fillSolidColor flag is", fillSolidColor);
+const doBlur = new URLSearchParams(window.location.search).get('blur') !== 'false';
+console.log("doBlur flag is", doBlur);
 
 // NEW: Helper function to draw polygons for debugging purposes.
 function drawPolygon(ctx, polygon, strokeStyle = 'red') {
@@ -463,7 +465,7 @@ function App() {
         });
         
         const yoffset = (rotMaxY - rotMinY) * 0.1; // the amount to stretch in the direction of the eyebrows
-        const xscaling = 0.8; // the amount to narrow in the direction of the cheeks
+        const xscaling = 0.85; // the amount to narrow in the direction of the cheeks
         
         // Adjust the rotated polygon: shift each point upward based on its vertical location.
         const adjustedRotatedPolygon1 = rotatedPolygon.map(pt => {
@@ -543,17 +545,32 @@ function App() {
             const dy = end.y - start.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
             const steps = Math.ceil(dist);
+            const numSurroundingPixels = 4;
             for (let j = 0; j <= steps; j++) {
               // Compute the pixel coordinate and clamp to valid boundaries.
               const sampleX = Math.round(start.x + j * dx / steps);
               const sampleY = Math.round(start.y + j * dy / steps);
               const x = Math.min(Math.max(sampleX, 0), imageData.width - 1);
               const y = Math.min(Math.max(sampleY, 0), imageData.height - 1);
-              const index = (y * imageData.width + x) * 4;
-              const r = imageData.data[index];
-              const g = imageData.data[index + 1];
-              const b = imageData.data[index + 2];
-              const a = imageData.data[index + 3] / 255;
+              // Average the color of the pixel at (x, y) with its surrounding neighbors.
+              let sumR = 0, sumG = 0, sumB = 0, sumA = 0, count = 0;
+              for (let offsetY = -numSurroundingPixels; offsetY <= numSurroundingPixels; offsetY++) {
+                for (let offsetX = -numSurroundingPixels; offsetX <= numSurroundingPixels; offsetX++) {
+                  // Clamp the neighbor coordinates to the image boundaries.
+                  const sampleX = Math.min(Math.max(x + offsetX, 0), imageData.width - 1);
+                  const sampleY = Math.min(Math.max(y + offsetY, 0), imageData.height - 1);
+                  const idx = (sampleY * imageData.width + sampleX) * 4;
+                  sumR += imageData.data[idx];
+                  sumG += imageData.data[idx + 1];
+                  sumB += imageData.data[idx + 2];
+                  sumA += imageData.data[idx + 3];
+                  count++;
+                }
+              }
+              const r = sumR / count;
+              const g = sumG / count;
+              const b = sumB / count;
+              const a = (sumA / count) / 255;
               compCtx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
               compCtx.lineWidth = 1;
               compCtx.beginPath();
@@ -564,7 +581,7 @@ function App() {
           });
 
           // --- Apply light Gaussian smoothing over the polygon area ---
-          {
+          if (doBlur) {
             // Create an offscreen canvas for the blur effect.
             const blurCanvas = document.createElement('canvas');
             blurCanvas.width = adjWidth;
