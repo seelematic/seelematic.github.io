@@ -702,7 +702,7 @@ function App() {
 
   return (
     <div style={{ padding: '1rem', fontFamily: 'sans-serif' }}>
-      <h1>Image Fixer App</h1>
+      <h1>Image Fixer App v1</h1>
       { !modelsLoaded ? (
         <p>Loading face models…</p>
       ) : !defaultFacesLoaded ? (
