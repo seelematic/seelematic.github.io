@@ -255,7 +255,7 @@ function App() {
     if (modelsLoaded) {
       async function loadDefaultFaceTargets() {
         // List of default face target filenames in public/faces.
-        const defaultFiles = ['elon-musk.jpg']; // <-- Update this list as needed.
+        const defaultFiles = ['elon-musk.jpg','elon-musk-2.png','jeff-bezos.webp']; // <-- Update this list as needed.
         const newTargets = [];
         for (let i = 0; i < defaultFiles.length; i++) {
           const url = process.env.PUBLIC_URL + '/faces/' + defaultFiles[i];
@@ -332,11 +332,14 @@ function App() {
     
     // Get the canvas ref and size it to the photo.
     const canvas = canvasRef.current;
-    canvas.width = img.width;
-    canvas.height = img.height;
+    // Use the image's intrinsic dimensions.
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
     const ctx = canvas.getContext('2d');
-    // Clear the canvas so that no image is shown until the "Generate Modified Target Photo" button is clicked.
-    ctx.clearRect(0, 0, img.width, img.height);
+    // Optionally clear previous canvas content.
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Redraw the original target photo at full resolution.
+    //ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight);
     
     // Removed the automatic processing of the target photo.
   };
@@ -361,7 +364,7 @@ function App() {
     
     // Run face detection (with landmarks and descriptors) on the target image.
     const detections = await faceapi
-      .detectAllFaces(img)
+      .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }))
       .withFaceLandmarks()
       .withFaceDescriptors();
 
@@ -376,7 +379,7 @@ function App() {
       // Compare with each face target.
       for (const target of faceTargets) {
         const distance = faceapi.euclideanDistance(descriptor, target.descriptor);
-        if (distance < 0.6) {
+        if (distance < 0.7) {
           isTargetMatch = true;
           break;
         }
@@ -473,7 +476,7 @@ function App() {
           return { x: pt.x * xscaling, y: pt.y - yoffset * weight };
         });
 
-        const yoffset2 = (rotMaxY - rotMinY) * 0.05; // the amount to shrink in the direction of the 
+        const yoffset2 = (rotMaxY - rotMinY) * 0.08; // the amount to shrink the chin
         
         // Adjust the rotated polygon: shift each point upward based on its vertical location.
         const adjustedRotatedPolygon = adjustedRotatedPolygon1.map(pt => {
@@ -703,7 +706,7 @@ function App() {
       { !modelsLoaded ? (
         <p>Loading face models…</p>
       ) : !defaultFacesLoaded ? (
-        <p>Loading default faces…</p>
+        <p>Loading default faces… (may take a while the first time the page is loaded)</p>
       ) : (
         <>
           <section style={{ marginBottom: '1rem' }}>
