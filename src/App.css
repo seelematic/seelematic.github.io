@@ -95,6 +95,12 @@ button:hover {
   display: block;
   margin: 0 auto;
   border: 2px solid #f8f8f8;
+  /* Disable text selection so long press triggers image save, not text selection */
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
 }
 
 .App {
