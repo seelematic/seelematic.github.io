@@ -18,11 +18,10 @@ const chinShrinkAmount = 0.08;     // Amount to shrink the chin (was hardcoded a
 // threshold for detecting whether something is a face or not in the image
 // (0=most permissive, 1=never detects a face)
 const isFaceDetection = 0.4;
-// threshold for determining if a detected face matches one of our targets
-// (0=never matches, 1=always matches)
-const faceMatchThreshold = 0.55;
 
 const faceLeftRightSensitivity = 3;
+const numPixelsSimulatedBlur = 4; // Change this value to increase the blur kernel radius
+const totalBlurBlend = 0.5; // 0.0 to 1.0, where 0.0 is no blur and 1.0 is full blur on the boundary regions
 
 // NEW: Helper function to draw polygons for debugging purposes.
 function drawPolygon(ctx, polygon, strokeStyle = 'red') {
@@ -100,6 +99,85 @@ function computeCentroid(points, faceLeftRightLookAngle = 0) {
   let sumX = 0, sumY = 0;
   points.forEach(pt => { sumX += pt.x; sumY += pt.y; });
   return { x: sumX / points.length, y: sumY / points.length };
+}
+
+
+// NEW: Helper function to compute a 1D Gaussian kernel.
+function gaussianKernel(radius) {
+  const sigma = radius / 3;
+  const kernelSize = 2 * radius + 1;
+  const kernel = new Array(kernelSize);
+  let sum = 0;
+  for (let i = 0; i < kernelSize; i++) {
+    const x = i - radius;
+    kernel[i] = Math.exp(-(x * x) / (2 * sigma * sigma));
+    sum += kernel[i];
+  }
+  // Normalize the kernel so that the sum of all weights is 1.
+  for (let i = 0; i < kernelSize; i++) {
+    kernel[i] /= sum;
+  }
+  return kernel;
+}
+
+// NEW: Helper function to apply a separable Gaussian blur to an ImageData object.
+function applyGaussianBlur(imageData, radius) {
+  const width = imageData.width;
+  const height = imageData.height;
+  const src = imageData.data;
+  const tmp = new Uint8ClampedArray(src.length);
+  const dst = new Uint8ClampedArray(src.length);
+  const kernel = gaussianKernel(radius);
+  const kernelSize = kernel.length;
+
+
+  // Horizontal pass
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const xx = Math.min(width - 1, Math.max(0, x + k));
+        const idx = (y * width + xx) * 4;
+        const weight = kernel[k + radius];
+        r += src[idx] * weight;
+        g += src[idx + 1] * weight;
+        b += src[idx + 2] * weight;
+        a += src[idx + 3] * weight;
+      }
+      const index = (y * width + x) * 4;
+      tmp[index] = r;
+      tmp[index + 1] = g;
+      tmp[index + 2] = b;
+      tmp[index + 3] = a;
+    }
+  }
+
+  // Vertical pass
+  for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const yy = Math.min(height - 1, Math.max(0, y + k));
+        const idx = (yy * width + x) * 4;
+        const weight = kernel[k + radius];
+        r += tmp[idx] * weight;
+        g += tmp[idx + 1] * weight;
+        b += tmp[idx + 2] * weight;
+        a += tmp[idx + 3] * weight;
+      }
+      const index = (y * width + x) * 4;
+      dst[index] = r;
+      dst[index + 1] = g;
+      dst[index + 2] = b;
+      dst[index + 3] = a;
+    }
+  }
+
+  // Copy the blurred result back to the imageData object.
+  for (let i = 0; i < src.length; i++) {
+    src[i] = dst[i];
+  }
+  return imageData;
 }
 
 // New helper function to compute the horizontal offset based on face direction.
@@ -298,7 +376,70 @@ function polygonIntersection(subjectPolygon, clipPolygon) {
   return outputList;
 }
 
+// NEW: Helper function to compute the distance from a point to a line segment.
+function distanceToSegment(p, v, w) {
+  const l2 = (w.x - v.x) ** 2 + (w.y - v.y) ** 2;
+  if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y); // v and w are the same point
+  let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  const projection = {
+    x: v.x + t * (w.x - v.x),
+    y: v.y + t * (w.y - v.y)
+  };
+  return Math.hypot(p.x - projection.x, p.y - projection.y);
+}
+
+// Modified: Helper function to check if a point is inside a polygon or within a buffer
+function pointInPolygonWithBuffer(x, y, polygon, buffer = 2) {
+  // First, perform the standard point-in-polygon test.
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    if ((yi > y) !== (yj > y) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+
+  // If the point is inside, return true.
+  if (inside) return true;
+
+  // Otherwise, check if the point is within the buffer distance from any edge.
+  for (let i = 0; i < polygon.length; i++) {
+    const v = polygon[i];
+    const w = polygon[(i + 1) % polygon.length];
+    // Assuming you have a distanceToSegment helper
+    const d = distanceToSegment({ x, y }, v, w);
+    if (d <= buffer) return true;
+  }
+  return false;
+}
+
+// NEW: Helper function to compute the bounding box for a polygon.
+function getBoundingBox(polygon) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  polygon.forEach(pt => {
+    if (pt.x < minX) minX = pt.x;
+    if (pt.x > maxX) maxX = pt.x;
+    if (pt.y < minY) minY = pt.y;
+    if (pt.y > maxY) maxY = pt.y;
+  });
+  return {
+    minX: Math.floor(minX),
+    maxX: Math.ceil(maxX),
+    minY: Math.floor(minY),
+    maxY: Math.ceil(maxY)
+  };
+}
+
+// NEW: Helper function to compute the bounding box center of a polygon using getBoundingBox.
+function getBoundingBoxCenter(polygon) {
+  const bbox = getBoundingBox(polygon);
+  return { x: (bbox.minX + bbox.maxX) / 2, y: (bbox.minY + bbox.maxY) / 2 };
+}
+
 function App() {
+  const [faceMatchThreshold, setFaceMatchThreshold] = useState(0.55);
   // Use state to track if models are loaded and to store the descriptors for our target headshots.
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [faceTargets, setFaceTargets] = useState([]); // Each element is { descriptor, image }
@@ -319,6 +460,29 @@ function App() {
   const [targetImage, setTargetImage] = useState(null);
   // Use references for the canvas and (optionally) the image elements.
   const canvasRef = useRef(null);
+
+  // NEW: States for advanced face polygon stretching sliders
+  const [stretchTop, setStretchTop] = useState(0);
+  const [stretchBottom, setStretchBottom] = useState(0);
+  const [stretchLeft, setStretchLeft] = useState(0);
+  const [stretchRight, setStretchRight] = useState(0);
+  // NEW: Reset function for advanced sliders.
+  const resetAdvancedSliders = () => {
+    setStretchTop(0);
+    setStretchBottom(0);
+    setStretchLeft(0);
+    setStretchRight(0);
+    setFaceMatchThreshold(0.55);
+  };
+  
+  // NEW: State for toggling the advanced section
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // NEW: State to track if generate has been clicked.
+  const [generated, setGenerated] = useState(false);
+
+  // NEW: State to track if the final image is ready to be shown.
+  const [finalImageReady, setFinalImageReady] = useState(false);
 
   // Load face-api models from the public folder.
   useEffect(() => {
@@ -496,6 +660,8 @@ function App() {
       return;
     }
     
+    setFinalImageReady(false);
+    
     const img = targetImage;
     const canvas = canvasRef.current;
     canvas.width = img.width;
@@ -541,45 +707,45 @@ function App() {
         // Compute the convex hull of these points to get a polygon that encloses the face.
         const facePolygon = computeConvexHull(allPoints);
         
-        // Compute the centroid of the face polygon using the helper function.
-        const centroid = computeCentroid(facePolygon);
+        // Adjust the face polygon based on advanced slider values
+        // Compute the centroid of the original polygon.
+        const center = computeCentroid(facePolygon);
+        // Compute the bounding box of the polygon.
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        facePolygon.forEach(pt => {
+          if (pt.x < minX) minX = pt.x;
+          if (pt.x > maxX) maxX = pt.x;
+          if (pt.y < minY) minY = pt.y;
+          if (pt.y > maxY) maxY = pt.y;
+        });
+        const boundingWidth = maxX - minX;
+        const boundingHeight = maxY - minY;
 
+        // Create an adjusted polygon by shifting vertices based on their relative position to the centroid.
+        // If a point is on the left of center, move it further left by (stretchLeft * boundingWidth).
+        // Similarly for right, top, and bottom.
+        const advancedAdjustedPolygon = facePolygon.map(pt => {
+          let newX = pt.x;
+          let newY = pt.y;
+          if (pt.x < center.x) {
+            newX = pt.x - stretchLeft * boundingWidth;
+          } else if (pt.x > center.x) {
+            newX = pt.x + stretchRight * boundingWidth;
+          }
+          if (pt.y < center.y) {
+            newY = pt.y - stretchTop * boundingHeight;
+          } else if (pt.y > center.y) {
+            newY = pt.y + stretchBottom * boundingHeight;
+          }
+          return { x: newX, y: newY };
+        });
+        
+        // Now use advancedAdjustedPolygon for further processing in place of facePolygon.
+        // For example, you might pass advancedAdjustedPolygon on to your masking/clipping logic.
+        
         // Compute the head boundary polygon using the segmentation model and clip the face polygon.
-        let limitedPolygon = facePolygon;
-        // if (segmentationModel) {
-        //   try {
-        //     console.log("Computing head boundary polygon");
-        //     const headPolygon = await computeHeadBoundaryPolygon(img, centroid, segmentationModel);
-        //     console.log("Head boundary polygon computed");
-        //     const clippedPolygon = polygonIntersection(facePolygon, headPolygon);
-        //     console.log("Clipped polygon computed");
-        //     if (clippedPolygon.length > 0) {
-        //       limitedPolygon = clippedPolygon;
-        //     } else {
-        //       console.warn("Clipping result is empty, using original face polygon.");
-        //     }
-        //     if (debug) {
-        //       console.log('Face polygon:', facePolygon);
-        //       console.log('Head polygon:', headPolygon);
-        //       console.log('Clipped polygon:', clippedPolygon);
-
-        //       // Draw debug overlays on the main canvas.
-        //       // facePolygon in red, headPolygon in green, clipped polygon in blue.
-        //       drawPolygon(ctx, facePolygon, 'red');
-        //       drawPolygon(ctx, headPolygon, 'green');
-        //       drawPolygon(ctx, clippedPolygon, 'blue');
-
-        //       // Draw debug overlays on the main canvas.
-        //       // facePolygon in red, headPolygon in green, clipped polygon in blue.
-        //       drawPolygon(ctx, facePolygon, 'red');
-        //       drawPolygon(ctx, headPolygon, 'green');
-        //       drawPolygon(ctx, clippedPolygon, 'blue');
-        //     }
-        //   } catch (error) {
-        //     console.warn("Error computing head boundary polygon:", error);
-        //   }
-        // }
-    
+        let limitedPolygon = advancedAdjustedPolygon;
+        
         // Recalculate centroid for the limited polygon using the helper function.
         const limitedCentroid = computeCentroid(limitedPolygon);
         
@@ -644,13 +810,7 @@ function App() {
         });
         
         // Compute the bounding box of the adjusted polygon.
-        let adjMinX = Infinity, adjMinY = Infinity, adjMaxX = -Infinity, adjMaxY = -Infinity;
-        adjustedPolygon.forEach(pt => {
-          adjMinX = Math.min(adjMinX, pt.x);
-          adjMinY = Math.min(adjMinY, pt.y);
-          adjMaxX = Math.max(adjMaxX, pt.x);
-          adjMaxY = Math.max(adjMaxY, pt.y);
-        });
+        const { minX: adjMinX, maxX: adjMaxX, minY: adjMinY, maxY: adjMaxY } = getBoundingBox(adjustedPolygon);
         const adjWidth = adjMaxX - adjMinX;
         const adjHeight = adjMaxY - adjMinY;
         
@@ -705,11 +865,11 @@ function App() {
               const y = Math.min(Math.max(sampleY, 0), imageData.height - 1);
               // Average the color of the pixel at (x, y) with its surrounding neighbors.
               let sumR = 0, sumG = 0, sumB = 0, sumA = 0, count = 0;
-              for (let offsetY = -numSurroundingPixels; offsetY <= numSurroundingPixels; offsetY++) {
-                for (let offsetX = -numSurroundingPixels; offsetX <= numSurroundingPixels; offsetX++) {
+              for (let dy = -numPixelsSimulatedBlur; dy <= numPixelsSimulatedBlur; dy++) {
+                for (let dx = -numPixelsSimulatedBlur; dx <= numPixelsSimulatedBlur; dx++) {
                   // Clamp the neighbor coordinates to the image boundaries.
-                  const sampleX = Math.min(Math.max(x + offsetX, 0), imageData.width - 1);
-                  const sampleY = Math.min(Math.max(y + offsetY, 0), imageData.height - 1);
+                  const sampleX = Math.min(Math.max(x + dx, 0), imageData.width - 1);
+                  const sampleY = Math.min(Math.max(y + dy, 0), imageData.height - 1);
                   const idx = (sampleY * imageData.width + sampleX) * 4;
                   sumR += imageData.data[idx];
                   sumG += imageData.data[idx + 1];
@@ -847,8 +1007,88 @@ function App() {
           // If not filling with a solid color, simply draw the scaled face directly on top of the original.
           ctx.drawImage(scaledFaceCanvas, 0, 0, adjWidth, adjHeight, adjMinX, adjMinY, adjWidth, adjHeight);
         }
+
+        // --- Begin simulated blur effect over boundary region ---
+        if (numPixelsSimulatedBlur > 0) {
+          // Grab the entire canvas' imageData.
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const data = imageData.data;
+          const width = imageData.width;
+          const height = imageData.height;
+          // Copy of the original, unblurred image.
+          const originalData = new Uint8ClampedArray(data);
+   
+          // Compute the additional horizontal offset and polygonB.
+          const additionalOffset = computeHorizontalOffset(faceDirection, adjWidth, faceScale);
+          const centroid = getBoundingBoxCenter(adjustedPolygon);
+          const polygonB = adjustedPolygon.map(pt => ({
+            x: centroid.x + (pt.x - centroid.x) * faceScale + additionalOffset,
+            y: centroid.y + (pt.y - centroid.y) * faceScale
+          }));
+   
+          // Compute a fully blurred version of the entire canvas.
+          const blurredImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          applyGaussianBlur(blurredImageData, numPixelsSimulatedBlur);
+          const blurredData = blurredImageData.data;
+   
+          // Loop over every pixel in the canvas.
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+              // Check if the pixel is within the boundary region.
+              if ( pointInPolygonWithBuffer(x, y, adjustedPolygon, numPixelsSimulatedBlur*3) ||
+                   pointInPolygonWithBuffer(x, y, polygonB, numPixelsSimulatedBlur*3) ) {
+                 const p = { x, y };
+                 let minDistance = Infinity;
+                 // Compute distance from p to all edges of adjustedPolygon.
+                 for (let i = 0; i < adjustedPolygon.length; i++) {
+                     const v = adjustedPolygon[i];
+                     const w = adjustedPolygon[(i + 1) % adjustedPolygon.length];
+                     const d = distanceToSegment(p, v, w);
+                     if (d < minDistance) minDistance = d;
+                 }
+                 // Compute distance from p to all edges of polygonB.
+                 for (let i = 0; i < polygonB.length; i++) {
+                     const v = polygonB[i];
+                     const w = polygonB[(i + 1) % polygonB.length];
+                     const d = distanceToSegment(p, v, w);
+                     if (d < minDistance) minDistance = d;
+                 }
+                 // Use a Gaussian function based on the distance.
+                 const sigma = numPixelsSimulatedBlur; // use the blur radius as sigma (adjust as needed)
+                 const weight = Math.exp(- (minDistance * minDistance) / (2 * sigma * sigma)) * totalBlurBlend;
+
+                 const idx = (y * width + x) * 4;
+                 // Blend the blurred color with the original using the computed weight.
+                //  data[idx]     = weight * 0 + (1 - weight) * originalData[idx];
+                //  data[idx + 1] = weight * 0 + (1 - weight) * originalData[idx + 1];
+                //  data[idx + 2] = weight * 0 + (1 - weight) * originalData[idx + 2];
+                //  data[idx + 3] = weight * 0 + (1 - weight) * originalData[idx + 3];
+                 data[idx]     = weight * blurredData[idx]     + (1 - weight) * originalData[idx];
+                 data[idx + 1] = weight * blurredData[idx + 1] + (1 - weight) * originalData[idx + 1];
+                 data[idx + 2] = weight * blurredData[idx + 2] + (1 - weight) * originalData[idx + 2];
+                 data[idx + 3] = weight * blurredData[idx + 3] + (1 - weight) * originalData[idx + 3];
+              }
+            }
+          }
+          ctx.putImageData(imageData, 0, 0);
+        } else {
+          console.log("Simulated blur effect skipped because numPixelsSimulatedBlur == 0");
+        }
+        // --- End simulated blur effect over boundary region ---
       }
     }
+    // Finalize the edited image using an offscreen canvas.
+    const finalCanvasOffscreen = document.createElement("canvas");
+    finalCanvasOffscreen.width = canvas.width;
+    finalCanvasOffscreen.height = canvas.height;
+    const offscreenCtx = finalCanvasOffscreen.getContext("2d");
+    // Draw the current canvas (with the edits) onto the offscreen canvas.
+    offscreenCtx.drawImage(canvas, 0, 0);
+    // Redraw the offscreen canvas back onto the main canvas.
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(finalCanvasOffscreen, 0, 0);
+    // Now mark the final image as ready.
+    setFinalImageReady(true);
   };
 
   useEffect(() => {
@@ -858,7 +1098,7 @@ function App() {
   return (
     <div className="app-container">
       <h1 className="logo">Billionaire Face $hrinker</h1>
-      <p className="subtitle">because they are deeply unserious people, and should be shrunk.</p>
+      <p className="subtitle">because they are lame, and should be shrunk 😊</p>
       <br></br>
       { !modelsLoaded ? (
         <p>Loading face models…</p>
@@ -922,7 +1162,7 @@ function App() {
               Scale: {faceScale}
               <input
                 type="range"
-                min="0.1"
+                min="0.5"
                 max="1.0"
                 step="0.01"
                 value={faceScale}
@@ -931,18 +1171,99 @@ function App() {
             </label>
           </section>
 
-
           <section style={{ marginBottom: '1rem' }}>
             <h2>4. Generate!</h2>
-            <button className="big-button" onClick={handleGenerateModifiedPhoto} style={{ marginTop: '0.5rem' }}>
+            <button
+              className="advanced-toggle"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+            >
+              Advanced {showAdvanced ? '-' : '+'}
+            </button>
+            {showAdvanced && (
+              <div className="advanced-section">
+                <div className="advanced-sliders">
+                  <label className="advanced-slider">
+                    <span className="advanced-slider-label">Top: {stretchTop}</span>
+                    <input
+                      type="range"
+                      min="-0.25"
+                      max="0.25"
+                      step="0.01"
+                      value={stretchTop}
+                      onChange={e => setStretchTop(parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <label className="advanced-slider">
+                    <span className="advanced-slider-label">Bottom: {stretchBottom}</span>
+                    <input
+                      type="range"
+                      min="-0.25"
+                      max="0.25"
+                      step="0.01"
+                      value={stretchBottom}
+                      onChange={e => setStretchBottom(parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <label className="advanced-slider">
+                    <span className="advanced-slider-label">Left: {stretchLeft}</span>
+                    <input
+                      type="range"
+                      min="-0.25"
+                      max="0.25"
+                      step="0.01"
+                      value={stretchLeft}
+                      onChange={e => setStretchLeft(parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <label className="advanced-slider">
+                    <span className="advanced-slider-label">Right: {stretchRight}</span>
+                    <input
+                      type="range"
+                      min="-0.25"
+                      max="0.25"
+                      step="0.01"
+                      value={stretchRight}
+                      onChange={e => setStretchRight(parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <label className="advanced-slider">
+                    <span className="advanced-slider-label">Face Match Threshold: {faceMatchThreshold}</span>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="0.9"
+                      step="0.01"
+                      value={faceMatchThreshold}
+                      onChange={e => setFaceMatchThreshold(parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <button onClick={resetAdvancedSliders}>Reset</button>
+                </div>
+              </div>
+            )}
+            <br></br>
+            {generated && !showAdvanced && (
+              <i style={{ color: '#999' }}>
+                &nbsp;(If the target face isn't being detected, or if the shrinking has artifacts around the edges, you can adjust the face boundary detection in the Advanced dropdown.)
+              </i>
+            )}
+            <br></br>
+            <button
+              className="big-button"
+              onClick={() => { setGenerated(true); handleGenerateModifiedPhoto(); }}
+              style={{ marginTop: '0.5rem' }}
+            >
               Generate
             </button>
+            <br />
           </section>
 
           <section>
+            {!finalImageReady && <p>Generating final image…</p>}
             <canvas 
               ref={canvasRef} 
-              className="face-canvas"
+              className="face-canvas" 
+              style={{ display: finalImageReady ? 'block' : 'none' }} 
             />
           </section>
 
