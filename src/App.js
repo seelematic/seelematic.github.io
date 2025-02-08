@@ -10,6 +10,19 @@ console.log("fillSolidColor flag is", fillSolidColor);
 const doBlur = new URLSearchParams(window.location.search).get('blur') !== 'false';
 console.log("doBlur flag is", doBlur);
 
+const eyebrowStretchAmount = 0.1;  // Amount to stretch in direction of eyebrows (was hardcoded as 0.1)
+const cheekStretchAmount = 0.85;   // Amount to narrow in direction of cheeks (was hardcoded as 0.85)
+const chinShrinkAmount = 0.08;     // Amount to shrink the chin (was hardcoded as 0.08)
+
+// threshold for detecting whether something is a face or not in the image
+// (0=most permissive, 1=never detects a face)
+const isFaceDetection = 0.4;
+// threshold for determining if a detected face matches one of our targets
+// (0=never matches, 1=always matches)
+const faceMatchThreshold = 0.55;
+
+const faceLeftRightSensitivity = 3;
+
 // NEW: Helper function to draw polygons for debugging purposes.
 function drawPolygon(ctx, polygon, strokeStyle = 'red') {
   if (!polygon || polygon.length === 0) return;
@@ -78,6 +91,78 @@ function computeAverageBoundaryColor(imageData, polygon) {
   }
   if (count === 0) return { r: 0, g: 0, b: 0 };
   return { r: Math.round(totalR / count), g: Math.round(totalG / count), b: Math.round(totalB / count) };
+}
+
+// NEW: Helper function to compute the centroid of an array of points.
+function computeCentroid(points, faceLeftRightLookAngle = 0) {
+  if (points.length === 0) return { x: 0, y: 0 };
+  let sumX = 0, sumY = 0;
+  points.forEach(pt => { sumX += pt.x; sumY += pt.y; });
+  return { x: sumX / points.length, y: sumY / points.length };
+}
+
+// New helper function to compute the horizontal offset based on face direction.
+// The function expects:
+// - angle: a number between -1 (face fully left) and 1 (face fully right)
+// - unshrunkWidth: the width of the original (unshrunk) face region
+// - faceScale: the scale factor applied to the face (e.g., 0.9)
+// 
+// Calculation details:
+// The total horizontal gap between the original and the scaled face is:
+//   totalGap = unshrunkWidth * (1 - faceScale)
+// By default, the scaled face is centered, meaning its left margin would be totalGap/2.
+// To adjust the positioning based on face direction, we compute a ratio using tanh:
+//   ratio = ((tanh(angle) / tanh(1)) + 1) / 2
+// Then, the additional offset is computed as:
+//   offset = totalGap * ratio - (totalGap/2)
+// This means:
+// - angle = -1: ratio becomes 0, offset = -totalGap/2 (shift left so the left edge touches)
+// - angle = 0: ratio becomes 0.5, offset = 0 (centered)
+// - angle = 1: ratio becomes 1, offset = totalGap/2 (shift right so the right edge touches)
+function computeHorizontalOffset(angle, unshrunkWidth, faceScale) {
+  const totalGap = unshrunkWidth * (1 - faceScale);
+  const ratio = (Math.tanh(angle * faceLeftRightSensitivity) / Math.tanh(faceLeftRightSensitivity) + 1) / 2;
+  return totalGap * ratio - totalGap / 2;
+}
+
+// Helper function to determine the gaze direction of a face based on facial landmarks.
+// returns a value between -1 and 1, where -1 is looking left, 0 is straight ahead, and 1 is looking right
+function getFaceDirection(landmarks) {
+  // Extract eye and nose landmarks.
+  const leftEye = landmarks.getLeftEye();
+  const rightEye = landmarks.getRightEye();
+  const nose = landmarks.getNose();
+
+  // Compute the centers of the eyes using the computeCentroid helper.
+  const leftEyeCenter = computeCentroid(leftEye);
+  const rightEyeCenter = computeCentroid(rightEye);
+  const eyeCenter = {
+    x: (leftEyeCenter.x + rightEyeCenter.x) / 2,
+    y: (leftEyeCenter.y + rightEyeCenter.y) / 2
+  };
+
+  // Determine the nose tip – choose the point with the maximum y value.
+  let noseTip = nose[0];
+  for (let i = 1; i < nose.length; i++) {
+    if (nose[i].y > noseTip.y) {
+      noseTip = nose[i];
+    }
+  }
+
+  // Compute the offset between the nose tip and the eye center.
+  const dx = noseTip.x - eyeCenter.x;
+
+  // Use inter-eye distance as a reference for normalization
+  const interEyeDistance = Math.hypot(rightEyeCenter.x - leftEyeCenter.x, rightEyeCenter.y - leftEyeCenter.y);
+
+  // Normalize dx by the inter-eye distance to get a value between -1 and 1
+  // Multiply by 2 since typical head rotation is about half the inter-eye distance
+  let angle = (dx / interEyeDistance) * 2;
+
+  // Clamp the value between -1 and 1
+  angle = Math.max(-1, Math.min(1, angle));
+
+  return angle;
 }
 
 // Helper function to compute the polygon for the head boundary 
@@ -215,9 +300,18 @@ function polygonIntersection(subjectPolygon, clipPolygon) {
 function App() {
   // Use state to track if models are loaded and to store the descriptors for our target headshots.
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  const [defaultFacesLoaded, setDefaultFacesLoaded] = useState(false);
   const [faceTargets, setFaceTargets] = useState([]); // Each element is { descriptor, image }
-  const [faceScale, setFaceScale] = useState(0.9);  // New state for final face scaling (default 0.9)
+  const [faceScale, setFaceScale] = useState(0.85);  // New state for final face scaling (default 0.9)
+  
+  // NEW: States for default face management:
+  const [defaultFaceOptions, setDefaultFaceOptions] = useState([]);  // Array of { filename, name, rank }
+  const [selectedDefaultFaceFilenames, setSelectedDefaultFaceFilenames] = useState([]); // The filenames selected from dropdown
+  const [faceSearchTerm, setFaceSearchTerm] = useState("");  // For filtering the dropdown
+
+  // NEW: States for tracking default faces loading progress.
+  const [defaultFacesProgress, setDefaultFacesProgress] = useState(0);
+  const [totalDefaultFaces, setTotalDefaultFaces] = useState(0);
+  
   // NEW state for segmentation model
   const [segmentationModel, setSegmentationModel] = useState(null);
   // NEW: State for storing the uploaded target photo.
@@ -250,40 +344,90 @@ function App() {
   //   loadSegModel();
   // }, []);
 
-  // NEW: Automatically load default face targets from the public/faces folder.
+  // NEW: Load default face options from face_filenames.json for the dropdown.
   useEffect(() => {
-    if (modelsLoaded) {
-      async function loadDefaultFaceTargets() {
-        // List of default face target filenames in public/faces.
-        const defaultFiles = ['elon-musk.jpg','elon-musk-2.png','jeff-bezos.webp']; // <-- Update this list as needed.
-        const newTargets = [];
-        for (let i = 0; i < defaultFiles.length; i++) {
-          const url = process.env.PUBLIC_URL + '/faces/' + defaultFiles[i];
-          const img = new Image();
-          img.src = url;
-          // Wait for the image to load.
-          await new Promise(resolve => { img.onload = resolve; });
-          // Run detection on this headshot.
-          const detection = await faceapi
-            .detectSingleFace(img)
-            .withFaceLandmarks()
-            .withFaceDescriptor();
-          
-          if (detection) {
-            newTargets.push({ descriptor: detection.descriptor, image: img });
-            console.log(`Loaded default face ${defaultFiles[i]}: descriptor computed`);
-          } else {
-            console.warn(`No face detected in ${defaultFiles[i]}`);
-          }
+    async function loadDefaultFaceOptions() {
+      try {
+        const response = await fetch(process.env.PUBLIC_URL + '/face_filenames.json');
+        if (!response.ok) {
+          console.error("Failed to load face_filenames.json");
+          return;
         }
-        // Append the default face targets to any already loaded.
-        setFaceTargets(prev => [...prev, ...newTargets]);
-        // Mark default faces as loaded
-        setDefaultFacesLoaded(true);
+        const jsonData = await response.json();
+        // Assuming jsonData structure: { "filename1.png": { name: "Name1", rank: 50 }, ... }
+        // Filter out entries where rank is not a valid number and convert the rank to a number.
+        const options = Object.keys(jsonData)
+          .filter(filename => !isNaN(parseFloat(jsonData[filename].rank)))
+          .map(filename => ({
+            filename,
+            name: jsonData[filename].name,
+            rank: parseFloat(jsonData[filename].rank)
+          }));
+        // Sort options in ascending order by rank.
+        options.sort((a, b) => a.rank - b.rank);
+        setDefaultFaceOptions(options);
+        setTotalDefaultFaces(options.length); // Optionally update total default faces
+      } catch (error) {
+        console.error("Error fetching face_filenames.json:", error);
       }
-      loadDefaultFaceTargets();
     }
-  }, [modelsLoaded]);
+    loadDefaultFaceOptions();
+  }, []);
+
+  // NEW: Load default faces on demand when the user selects them using checkboxes.
+  // We use a ref to track which default faces have already been loaded.
+  const loadedDefaultSetRef = useRef(new Set());
+
+  useEffect(() => {
+    if (!modelsLoaded) return;
+
+    async function fetchDefaultFaces() {
+      // Remove any default face from faceTargets that is no longer selected.
+      setFaceTargets(prev =>
+        prev.filter(target => target.source !== 'default' || selectedDefaultFaceFilenames.includes(target.filename))
+      );
+
+      // Determine which selected filenames have not been loaded yet.
+      const toLoad = selectedDefaultFaceFilenames.filter(
+        filename => !loadedDefaultSetRef.current.has(filename)
+      );
+
+      if (toLoad.length === 0) return;
+
+      for (const filename of toLoad) {
+        const url = process.env.PUBLIC_URL + '/faces/' + filename;
+        const img = new Image();
+        img.src = url;
+        await new Promise(resolve => {
+          img.onload = resolve;
+        });
+
+        const detection = await faceapi
+          .detectSingleFace(img)
+          .withFaceLandmarks()
+          .withFaceDescriptor();
+
+        if (detection) {
+          setFaceTargets(prev => [
+            ...prev,
+            {
+              descriptor: detection.descriptor,
+              image: img,
+              filename,
+              source: 'default'
+            }
+          ]);
+          loadedDefaultSetRef.current.add(filename);
+          console.log(`Loaded default face ${filename}`);
+          setDefaultFacesProgress(prev => prev + 1);
+        } else {
+          console.warn(`No face detected in ${filename}`);
+        }
+      }
+    }
+
+    fetchDefaultFaces();
+  }, [selectedDefaultFaceFilenames, modelsLoaded]);
 
   // UPDATED: Append uploaded face targets to existing ones.
   const handleFaceTargetsChange = async (event) => {
@@ -364,7 +508,7 @@ function App() {
     
     // Run face detection (with landmarks and descriptors) on the target image.
     const detections = await faceapi
-      .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }))
+      .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: isFaceDetection }))
       .withFaceLandmarks()
       .withFaceDescriptors();
 
@@ -379,7 +523,7 @@ function App() {
       // Compare with each face target.
       for (const target of faceTargets) {
         const distance = faceapi.euclideanDistance(descriptor, target.descriptor);
-        if (distance < 0.7) {
+        if (distance < faceMatchThreshold) {
           isTargetMatch = true;
           break;
         }
@@ -396,10 +540,8 @@ function App() {
         // Compute the convex hull of these points to get a polygon that encloses the face.
         const facePolygon = computeConvexHull(allPoints);
         
-        // Compute the centroid of the face polygon.
-        let sumX = 0, sumY = 0;
-        facePolygon.forEach(pt => { sumX += pt.x; sumY += pt.y; });
-        const centroid = { x: sumX / facePolygon.length, y: sumY / facePolygon.length };
+        // Compute the centroid of the face polygon using the helper function.
+        const centroid = computeCentroid(facePolygon);
 
         // Compute the head boundary polygon using the segmentation model and clip the face polygon.
         let limitedPolygon = facePolygon;
@@ -425,16 +567,20 @@ function App() {
         //       drawPolygon(ctx, facePolygon, 'red');
         //       drawPolygon(ctx, headPolygon, 'green');
         //       drawPolygon(ctx, clippedPolygon, 'blue');
+
+        //       // Draw debug overlays on the main canvas.
+        //       // facePolygon in red, headPolygon in green, clipped polygon in blue.
+        //       drawPolygon(ctx, facePolygon, 'red');
+        //       drawPolygon(ctx, headPolygon, 'green');
+        //       drawPolygon(ctx, clippedPolygon, 'blue');
         //     }
         //   } catch (error) {
         //     console.warn("Error computing head boundary polygon:", error);
         //   }
         // }
     
-        // Recalculate centroid for the limited polygon.
-        let limitedSumX = 0, limitedSumY = 0;
-        limitedPolygon.forEach(pt => { limitedSumX += pt.x; limitedSumY += pt.y; });
-        const limitedCentroid = { x: limitedSumX / limitedPolygon.length, y: limitedSumY / limitedPolygon.length };
+        // Recalculate centroid for the limited polygon using the helper function.
+        const limitedCentroid = computeCentroid(limitedPolygon);
         
         // Get eye positions to compute face rotation.
         const leftEye = det.landmarks.getLeftEye();
@@ -446,6 +592,10 @@ function App() {
         leftEyeCenter.y /= leftEye.length;
         rightEyeCenter.x /= rightEye.length;
         rightEyeCenter.y /= rightEye.length;
+
+        // Get face direction using the helper function
+        const faceDirection = getFaceDirection(det.landmarks);
+        console.log("Face direction:", faceDirection);
         
         // Compute the face rotation angle (in radians) from the eye centers.
         const angle = Math.atan2(rightEyeCenter.y - leftEyeCenter.y, rightEyeCenter.x - leftEyeCenter.x);
@@ -467,8 +617,8 @@ function App() {
           rotMaxY = Math.max(rotMaxY, pt.y);
         });
         
-        const yoffset = (rotMaxY - rotMinY) * 0.1; // the amount to stretch in the direction of the eyebrows
-        const xscaling = 0.85; // the amount to narrow in the direction of the cheeks
+        const yoffset = (rotMaxY - rotMinY) * eyebrowStretchAmount; // the amount to stretch in the direction of the eyebrows
+        const xscaling = cheekStretchAmount; // the amount to narrow in the direction of the cheeks
         
         // Adjust the rotated polygon: shift each point upward based on its vertical location.
         const adjustedRotatedPolygon1 = rotatedPolygon.map(pt => {
@@ -476,7 +626,7 @@ function App() {
           return { x: pt.x * xscaling, y: pt.y - yoffset * weight };
         });
 
-        const yoffset2 = (rotMaxY - rotMinY) * 0.08; // the amount to shrink the chin
+        const yoffset2 = (rotMaxY - rotMinY) * chinShrinkAmount; // the amount to shrink the chin
         
         // Adjust the rotated polygon: shift each point upward based on its vertical location.
         const adjustedRotatedPolygon = adjustedRotatedPolygon1.map(pt => {
@@ -532,14 +682,11 @@ function App() {
           compCtx.lineCap = 'butt';
           compCtx.lineJoin = 'miter';
   
-          // Compute the centroid of the polygon.
-          let polyCentroid = { x: 0, y: 0 };
-          translatedPolygon.forEach(pt => {
-            polyCentroid.x += pt.x;
-            polyCentroid.y += pt.y;
-          });
-          polyCentroid.x /= translatedPolygon.length;
-          polyCentroid.y /= translatedPolygon.length;
+          // Compute the centroid of the polygon using the helper function.
+          const polyCentroid = computeCentroid(translatedPolygon, faceDirection);
+          // Compute horizontal offset based on face direction and adjust the centroid.
+          const horizontalOffset = computeHorizontalOffset(faceDirection, adjWidth, faceScale);
+          const adjustedPolyCentroid = { x: polyCentroid.x + horizontalOffset, y: polyCentroid.y };
   
           // For each edge of the polygon, sample points and draw a radial line from the point to the centroid.
           translatedPolygon.forEach((start, i) => {
@@ -578,7 +725,8 @@ function App() {
               compCtx.lineWidth = 1;
               compCtx.beginPath();
               compCtx.moveTo(x, y);
-              compCtx.lineTo(polyCentroid.x, polyCentroid.y);
+              // Draw radial line to the adjusted centroid.
+              compCtx.lineTo(adjustedPolyCentroid.x, adjustedPolyCentroid.y);
               compCtx.stroke();
             }
           });
@@ -595,7 +743,6 @@ function App() {
               // Built-in blur filter supported – use it (desktop-friendly)
               blurCtx.filter = 'blur(4px)';
               blurCtx.save();
-              blurCtx.beginPath();
               translatedPolygon.forEach((pt, i) => {
                 if (i === 0) blurCtx.moveTo(pt.x, pt.y);
                 else blurCtx.lineTo(pt.x, pt.y);
@@ -684,8 +831,11 @@ function App() {
         const scaledHeight = adjHeight * faceScale;
         const offsetX = (adjWidth - scaledWidth) / 2;
         const offsetY = (adjHeight - scaledHeight) / 2;
+        // Compute additional horizontal offset based on face direction.
+        const additionalOffset = computeHorizontalOffset(faceDirection, adjWidth, faceScale);
+        const newOffsetX = offsetX + additionalOffset;
      
-        scaledFaceCtx.drawImage(faceCanvas, 0, 0, adjWidth, adjHeight, offsetX, offsetY, scaledWidth, scaledHeight);
+        scaledFaceCtx.drawImage(faceCanvas, 0, 0, adjWidth, adjHeight, newOffsetX, offsetY, scaledWidth, scaledHeight);
      
         if (fillSolidColor) {
           // Step 3. On the composite canvas, overlay the scaled, masked face on top of the average-color background.
@@ -702,41 +852,24 @@ function App() {
 
   return (
     <div style={{ padding: '1rem', fontFamily: 'sans-serif' }}>
-      <h1>Image Fixer App</h1>
+      <h1>Billionaire Face Shrinker</h1>
+      <p>because they are deeply unserious people.</p>
+      <br></br>
       { !modelsLoaded ? (
         <p>Loading face models…</p>
-      ) : !defaultFacesLoaded ? (
-        <p>Loading default faces… (may take a while the first time the page is loaded)</p>
       ) : (
         <>
           <section style={{ marginBottom: '1rem' }}>
-            <h2>1. OPTIONAL: Provide individuals (headshot photos)</h2>
-            <p>
-              A few default faces are baked in as well.
-            </p>
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={handleFaceTargetsChange}
-            />
-          </section>
-
-          <section style={{ marginBottom: '1rem' }}>
-            <h2>2. Upload Target Photo</h2>
+            <h2>1. Upload Photos to Faceshrink</h2>
             <input
               type="file"
               accept="image/*"
               onChange={handleTargetPhotoChange}
             />
-            <p>
-              The app will detect faces and, if a face matches one of your targets,
-              correct photographic errors by scaling the face by the selected percentage.
-            </p>
           </section>
 
           <section style={{ marginBottom: '1rem' }}>
-            <h2>3. Final Face Scale</h2>
+            <h2>2. Final Face Scale</h2>
             <label>
               Scale: {faceScale}
               <input
@@ -751,17 +884,70 @@ function App() {
           </section>
 
           <section style={{ marginBottom: '1rem' }}>
-            <h2>4. Generate Modified Target Photo</h2>
+            <h2>3. Select Billionaires to Faceshrink</h2>
+            <input
+              type="text"
+              placeholder="Search faces…"
+              value={faceSearchTerm}
+              onChange={(e) => setFaceSearchTerm(e.target.value)}
+              style={{ marginBottom: '0.5rem', display: 'block' }}
+            />
+            <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #ddd', padding: '0.5rem' }}>
+              {defaultFaceOptions
+                .filter(option =>
+                  option.name.toLowerCase().includes(faceSearchTerm.toLowerCase())
+                )
+                .map(option => (
+                  <label key={option.filename} style={{ display: 'block', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      value={option.filename}
+                      checked={selectedDefaultFaceFilenames.includes(option.filename)}
+                      onChange={() => {
+                        const filename = option.filename;
+                        if (selectedDefaultFaceFilenames.includes(filename)) {
+                          setSelectedDefaultFaceFilenames(selectedDefaultFaceFilenames.filter(item => item !== filename));
+                        } else {
+                          setSelectedDefaultFaceFilenames([...selectedDefaultFaceFilenames, filename]);
+                        }
+                      }}
+                      style={{ marginRight: '0.5rem' }}
+                    />
+                    {option.name} (Rank: {option.rank})
+                  </label>
+                ))}
+            </div>
+          </section>
+
+          <section style={{ marginBottom: '1rem' }}>
+            <h3>(OPTIONAL: Provide additional individuals to faceshrink (headshot photos))</h3>
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={handleFaceTargetsChange}
+            />
+          </section>
+
+          <section style={{ marginBottom: '1rem' }}>
+            <h2>4. Generate!</h2>
             <button onClick={handleGenerateModifiedPhoto} style={{ marginTop: '0.5rem' }}>
-              Generate Modified Target Photo
+              Generate
             </button>
           </section>
 
           <section>
-            <h2>Modified Target Photo</h2>
-            <canvas ref={canvasRef} style={{ maxWidth: '100%', border: '1px solid #ccc' }} />
+            <canvas 
+              ref={canvasRef} 
+              style={{ 
+                maxWidth: '800px', // Limit maximum width
+                maxHeight: '800px', // Limit maximum height
+                width: '100%', 
+                height: 'auto',
+                objectFit: 'contain'
+              }} 
+            />
           </section>
-
         </>
       )}
     </div>
