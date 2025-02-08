@@ -458,7 +458,8 @@ function App() {
   const [segmentationModel, setSegmentationModel] = useState(null);
   // NEW: State for storing the uploaded target photo.
   const [targetImage, setTargetImage] = useState(null);
-  // Use references for the canvas and (optionally) the image elements.
+  const faceTargetsProcessingRef = useRef(Promise.resolve());
+  // Use a ref for the canvas element.
   const canvasRef = useRef(null);
 
   // NEW: States for advanced face polygon stretching sliders
@@ -466,6 +467,8 @@ function App() {
   const [stretchBottom, setStretchBottom] = useState(0);
   const [stretchLeft, setStretchLeft] = useState(0);
   const [stretchRight, setStretchRight] = useState(0);
+  // NEW: State for Hyper Mode (postprocessing) toggle.
+  const [hyperMode, setHyperMode] = useState(false);
   // NEW: Reset function for advanced sliders.
   const resetAdvancedSliders = () => {
     setStretchTop(0);
@@ -596,37 +599,43 @@ function App() {
 
   // UPDATED: Append uploaded face targets to existing ones.
   const handleFaceTargetsChange = async (event) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) return;
-    const targets = [];
+    faceTargetsProcessingRef.current = (async () => {
+      const files = event.target.files;
+      if (!files || files.length === 0) return;
+      const targets = [];
 
-    // Process each uploaded image
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const img = new Image();
-      img.src = URL.createObjectURL(file);
-      // Wait for the image to load.
-      await new Promise(resolve => { img.onload = resolve; });
-      
-      // Run detection on this headshot.
-      const detection = await faceapi
-        .detectSingleFace(img)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-      
-      if (detection) {
-        targets.push({ descriptor: detection.descriptor, image: img });
-        console.log(`Loaded uploaded target ${i}: descriptor computed`);
-      } else {
-        console.warn(`No face detected in ${file.name}`);
+      // Process each uploaded image
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const img = new Image();
+        img.src = URL.createObjectURL(file);
+        // Wait for the image to load.
+        await new Promise(resolve => { img.onload = resolve; });
+        
+        // Run detection on this headshot.
+        const detection = await faceapi
+          .detectSingleFace(img)
+          .withFaceLandmarks()
+          .withFaceDescriptor();
+        
+        if (detection) {
+          targets.push({ descriptor: detection.descriptor, image: img });
+          console.log(`Loaded uploaded target ${i}: descriptor computed`);
+        } else {
+          console.warn(`No face detected in ${file.name}`);
+        }
       }
-    }
-    // Append the new targets to the existing face targets.
-    setFaceTargets(prev => [...prev, ...targets]);
+      // Append the new targets to the existing face targets.
+      setFaceTargets(prev => [...prev, ...targets]);
+    })();
+    await faceTargetsProcessingRef.current;
   };
 
   // Handler for uploading the target photo where some faces might be in the face targets
   const handleTargetPhotoChange = async (event) => {
+    // WAIT for any pending face target uploads to finish.
+    await faceTargetsProcessingRef.current;
+
     console.log("handleTargetPhotoChange triggered");
     const file = event.target.files[0];
     if (!file) return;
@@ -653,7 +662,28 @@ function App() {
     // Removed the automatic processing of the target photo.
   };
 
-  // NEW: Handler to generate the modified target photo using the stored targetImage.
+  // NEW: Helper function to offload heavy blur processing into a worker.
+  async function processBlurInWorker(payload) {
+    return new Promise((resolve, reject) => {
+      // Use the new URL() syntax to load worker.js from the src folder.
+      const worker = new Worker(new URL('./worker.js', import.meta.url));
+      worker.onmessage = (e) => {
+        resolve(e.data.modifiedBuffer);
+        worker.terminate();
+      };
+      worker.onerror = (err) => {
+        reject(err);
+        worker.terminate();
+      };
+      // Transfer only the buffers that can and should be transferred.
+      worker.postMessage(payload, [
+        payload.originalBuffer,
+        payload.blurredBuffer,
+      ]);
+    });
+  }
+
+  // UPDATED: Handler to generate the modified target photo using the stored targetImage.
   const handleGenerateModifiedPhoto = async () => {
     if (!targetImage) {
       console.warn("No target image available to process");
@@ -673,7 +703,7 @@ function App() {
     // Redraw the original target photo.
     ctx.drawImage(img, 0, 0, img.width, img.height);
     
-    // Run face detection (with landmarks and descriptors) on the target image.
+    // Run face detection on the target image.
     const detections = await faceapi
       .detectAllFaces(img, new faceapi.SsdMobilenetv1Options({ minConfidence: isFaceDetection }))
       .withFaceLandmarks()
@@ -1009,70 +1039,45 @@ function App() {
         }
 
         // --- Begin simulated blur effect over boundary region ---
-        if (numPixelsSimulatedBlur > 0) {
+        if (hyperMode && numPixelsSimulatedBlur > 0) {
           // Grab the entire canvas' imageData.
           const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const data = imageData.data;
-          const width = imageData.width;
-          const height = imageData.height;
-          // Copy of the original, unblurred image.
-          const originalData = new Uint8ClampedArray(data);
-   
-          // Compute the additional horizontal offset and polygonB.
+          // Create a copy of the original (unblurred) data.
+          const originalData = new Uint8ClampedArray(imageData.data);
+          // Create a fully blurred version using the helper (existing) function.
+          const blurredImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          applyGaussianBlur(blurredImageData, numPixelsSimulatedBlur);
+          const blurredData = new Uint8ClampedArray(blurredImageData.data);
+          
+          // Compute additional polygonB based on face direction.
           const additionalOffset = computeHorizontalOffset(faceDirection, adjWidth, faceScale);
           const centroid = getBoundingBoxCenter(adjustedPolygon);
           const polygonB = adjustedPolygon.map(pt => ({
             x: centroid.x + (pt.x - centroid.x) * faceScale + additionalOffset,
             y: centroid.y + (pt.y - centroid.y) * faceScale
           }));
-   
-          // Compute a fully blurred version of the entire canvas.
-          const blurredImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          applyGaussianBlur(blurredImageData, numPixelsSimulatedBlur);
-          const blurredData = blurredImageData.data;
-   
-          // Loop over every pixel in the canvas.
-          for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-              // Check if the pixel is within the boundary region.
-              if ( pointInPolygonWithBuffer(x, y, adjustedPolygon, numPixelsSimulatedBlur*3) ||
-                   pointInPolygonWithBuffer(x, y, polygonB, numPixelsSimulatedBlur*3) ) {
-                 const p = { x, y };
-                 let minDistance = Infinity;
-                 // Compute distance from p to all edges of adjustedPolygon.
-                 for (let i = 0; i < adjustedPolygon.length; i++) {
-                     const v = adjustedPolygon[i];
-                     const w = adjustedPolygon[(i + 1) % adjustedPolygon.length];
-                     const d = distanceToSegment(p, v, w);
-                     if (d < minDistance) minDistance = d;
-                 }
-                 // Compute distance from p to all edges of polygonB.
-                 for (let i = 0; i < polygonB.length; i++) {
-                     const v = polygonB[i];
-                     const w = polygonB[(i + 1) % polygonB.length];
-                     const d = distanceToSegment(p, v, w);
-                     if (d < minDistance) minDistance = d;
-                 }
-                 // Use a Gaussian function based on the distance.
-                 const sigma = numPixelsSimulatedBlur; // use the blur radius as sigma (adjust as needed)
-                 const weight = Math.exp(- (minDistance * minDistance) / (2 * sigma * sigma)) * totalBlurBlend;
+          
+          // Construct payload to send to the worker.
+          const payload = {
+            type: 'processBlur',
+            // Transfer the underlying ArrayBuffer from the Uint8ClampedArray.
+            data: imageData.data.buffer,
+            width: imageData.width,
+            height: imageData.height,
+            originalBuffer: originalData.buffer,
+            blurredBuffer: blurredData.buffer,
+            adjustedPolygon: adjustedPolygon, // plain JavaScript objects
+            polygonB: polygonB,
+            numPixelsSimulatedBlur: numPixelsSimulatedBlur,
+            totalBlurBlend: totalBlurBlend
+          };
 
-                 const idx = (y * width + x) * 4;
-                 // Blend the blurred color with the original using the computed weight.
-                //  data[idx]     = weight * 0 + (1 - weight) * originalData[idx];
-                //  data[idx + 1] = weight * 0 + (1 - weight) * originalData[idx + 1];
-                //  data[idx + 2] = weight * 0 + (1 - weight) * originalData[idx + 2];
-                //  data[idx + 3] = weight * 0 + (1 - weight) * originalData[idx + 3];
-                 data[idx]     = weight * blurredData[idx]     + (1 - weight) * originalData[idx];
-                 data[idx + 1] = weight * blurredData[idx + 1] + (1 - weight) * originalData[idx + 1];
-                 data[idx + 2] = weight * blurredData[idx + 2] + (1 - weight) * originalData[idx + 2];
-                 data[idx + 3] = weight * blurredData[idx + 3] + (1 - weight) * originalData[idx + 3];
-              }
-            }
-          }
+          // Offload the heavy processing to the worker.
+          const modifiedBuffer = await processBlurInWorker(payload);
+          imageData.data.set(new Uint8ClampedArray(modifiedBuffer));
           ctx.putImageData(imageData, 0, 0);
         } else {
-          console.log("Simulated blur effect skipped because numPixelsSimulatedBlur == 0");
+          console.log("Simulated blur effect skipped because Hyper Mode is off or blur radius is 0");
         }
         // --- End simulated blur effect over boundary region ---
       }
@@ -1082,12 +1087,9 @@ function App() {
     finalCanvasOffscreen.width = canvas.width;
     finalCanvasOffscreen.height = canvas.height;
     const offscreenCtx = finalCanvasOffscreen.getContext("2d");
-    // Draw the current canvas (with the edits) onto the offscreen canvas.
     offscreenCtx.drawImage(canvas, 0, 0);
-    // Redraw the offscreen canvas back onto the main canvas.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(finalCanvasOffscreen, 0, 0);
-    // Now mark the final image as ready.
     setFinalImageReady(true);
   };
 
@@ -1237,6 +1239,14 @@ function App() {
                       onChange={e => setFaceMatchThreshold(parseFloat(e.target.value))}
                     />
                   </label>
+                  <label className="advanced-slider">
+                    <span className="advanced-slider-label">Hyper Mode (postprocessing): {hyperMode ? "ON" : "OFF"}</span>
+                    <input
+                      type="checkbox"
+                      checked={hyperMode}
+                      onChange={e => setHyperMode(e.target.checked)}
+                    />
+                  </label>
                   <button onClick={resetAdvancedSliders}>Reset</button>
                 </div>
               </div>
@@ -1259,7 +1269,7 @@ function App() {
           </section>
 
           <section>
-            {!finalImageReady && <p>Generating final image…</p>}
+            {!finalImageReady && generated && <p>Generating final image…</p>}
             <canvas 
               ref={canvasRef} 
               className="face-canvas" 
