@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as faceapi from 'face-api.js';
 //import * as bodyPix from '@tensorflow-models/body-pix';
+import './App.css';
 
 // Check the URL for ?debug=true and set the debug flag accordingly.
 const debug = new URLSearchParams(window.location.search).get('debug') === 'true';
@@ -855,9 +856,9 @@ function App() {
   }, []);
 
   return (
-    <div style={{ padding: '1rem', fontFamily: 'sans-serif' }}>
-      <h1>Billionaire Face Shrinker</h1>
-      <p>because they are deeply unserious people.</p>
+    <div className="app-container">
+      <h1 className="logo">Billionaire Face Shrinker</h1>
+      <p className="subtitle">because they are deeply unserious people, and should be shrunk.</p>
       <br></br>
       { !modelsLoaded ? (
         <p>Loading face models…</p>
@@ -881,7 +882,7 @@ function App() {
               onChange={(e) => setFaceSearchTerm(e.target.value)}
               style={{ marginBottom: '0.5rem', display: 'block' }}
             />
-            <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #ddd', padding: '0.5rem' }}>
+            <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #ddd', padding: '0.5rem', marginBottom: '1rem' }}>
               {defaultFaceOptions
                 .filter(option =>
                   option.name.toLowerCase().includes(faceSearchTerm.toLowerCase())
@@ -905,10 +906,8 @@ function App() {
                   </label>
                 ))}
             </div>
-          </section>
-
-          <section style={{ marginBottom: '1rem' }}>
-            <h3>(OPTIONAL: Provide additional individuals to faceshrink (headshot photos))</h3>
+            <br></br>
+            <h3 style={{ marginTop: '0rem' }}>(OPTIONAL: Provide additional individuals to faceshrink (headshot photos))</h3>
             <input
               type="file"
               accept="image/*"
@@ -919,7 +918,7 @@ function App() {
 
           <section style={{ marginBottom: '1rem' }}>
             <h2>3. Final Face Scale</h2>
-            <label>
+            <label className="face-scale-label">
               Scale: {faceScale}
               <input
                 type="range"
@@ -935,7 +934,7 @@ function App() {
 
           <section style={{ marginBottom: '1rem' }}>
             <h2>4. Generate!</h2>
-            <button onClick={handleGenerateModifiedPhoto} style={{ marginTop: '0.5rem' }}>
+            <button className="big-button" onClick={handleGenerateModifiedPhoto} style={{ marginTop: '0.5rem' }}>
               Generate
             </button>
           </section>
@@ -943,13 +942,7 @@ function App() {
           <section>
             <canvas 
               ref={canvasRef} 
-              style={{ 
-                maxWidth: '800px', // Limit maximum width
-                maxHeight: '800px', // Limit maximum height
-                width: '100%', 
-                height: 'auto',
-                objectFit: 'contain'
-              }} 
+              className="face-canvas"
             />
           </section>
         </>
