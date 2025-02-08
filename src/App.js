@@ -873,22 +873,7 @@ function App() {
           </section>
 
           <section style={{ marginBottom: '1rem' }}>
-            <h2>2. Final Face Scale</h2>
-            <label>
-              Scale: {faceScale}
-              <input
-                type="range"
-                min="0.1"
-                max="1.0"
-                step="0.01"
-                value={faceScale}
-                onChange={e => setFaceScale(parseFloat(e.target.value))}
-              />
-            </label>
-          </section>
-
-          <section style={{ marginBottom: '1rem' }}>
-            <h2>3. Select Billionaires to Faceshrink</h2>
+            <h2>2. Select Billionaires to Faceshrink</h2>
             <input
               type="text"
               placeholder="Search faces…"
@@ -908,13 +893,12 @@ function App() {
                       value={option.filename}
                       checked={selectedDefaultFaceFilenames.includes(option.filename)}
                       onChange={() => {
-                        const filename = option.filename;
-                        if (selectedDefaultFaceFilenames.includes(filename)) {
-                          setSelectedDefaultFaceFilenames(selectedDefaultFaceFilenames.filter(item => item !== filename));
-                        } else {
-                          setSelectedDefaultFaceFilenames([...selectedDefaultFaceFilenames, filename]);
+                        // Only add the filename if not already selected.
+                        if (!selectedDefaultFaceFilenames.includes(option.filename)) {
+                          setSelectedDefaultFaceFilenames([...selectedDefaultFaceFilenames, option.filename]);
                         }
                       }}
+                      disabled={selectedDefaultFaceFilenames.includes(option.filename)}
                       style={{ marginRight: '0.5rem' }}
                     />
                     {option.name} (Rank: {option.rank})
@@ -932,6 +916,22 @@ function App() {
               onChange={handleFaceTargetsChange}
             />
           </section>
+
+          <section style={{ marginBottom: '1rem' }}>
+            <h2>3. Final Face Scale</h2>
+            <label>
+              Scale: {faceScale}
+              <input
+                type="range"
+                min="0.1"
+                max="1.0"
+                step="0.01"
+                value={faceScale}
+                onChange={e => setFaceScale(parseFloat(e.target.value))}
+              />
+            </label>
+          </section>
+
 
           <section style={{ marginBottom: '1rem' }}>
             <h2>4. Generate!</h2>
