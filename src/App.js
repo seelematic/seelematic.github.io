@@ -476,6 +476,9 @@ function App() {
     setStretchLeft(0);
     setStretchRight(0);
     setFaceMatchThreshold(0.55);
+    setOverriddenFaceAngle(0);
+    setFaceAngleOverride(false);
+    setHyperMode(false);
   };
   
   // NEW: State for toggling the advanced section
@@ -486,6 +489,10 @@ function App() {
 
   // NEW: State to track if the final image is ready to be shown.
   const [finalImageReady, setFinalImageReady] = useState(false);
+
+  // NEW: States for Face L/R Angle Override.
+  const [faceAngleOverride, setFaceAngleOverride] = useState(false);
+  const [overriddenFaceAngle, setOverriddenFaceAngle] = useState(0);
 
   // Load face-api models from the public folder.
   useEffect(() => {
@@ -1023,7 +1030,11 @@ function App() {
         const offsetX = (adjWidth - scaledWidth) / 2;
         const offsetY = (adjHeight - scaledHeight) / 2;
         // Compute additional horizontal offset based on face direction.
-        const additionalOffset = computeHorizontalOffset(faceDirection, adjWidth, faceScale);
+        const additionalOffset = computeHorizontalOffset(
+          faceAngleOverride ? overriddenFaceAngle : faceDirection,
+          adjWidth,
+          faceScale
+        );
         const newOffsetX = offsetX + additionalOffset;
      
         scaledFaceCtx.drawImage(faceCanvas, 0, 0, adjWidth, adjHeight, newOffsetX, offsetY, scaledWidth, scaledHeight);
@@ -1050,7 +1061,11 @@ function App() {
           const blurredData = new Uint8ClampedArray(blurredImageData.data);
           
           // Compute additional polygonB based on face direction.
-          const additionalOffset = computeHorizontalOffset(faceDirection, adjWidth, faceScale);
+          const additionalOffset = computeHorizontalOffset(
+            faceAngleOverride ? overriddenFaceAngle : faceDirection,
+            adjWidth,
+            faceScale
+          );
           const centroid = getBoundingBoxCenter(adjustedPolygon);
           const polygonB = adjustedPolygon.map(pt => ({
             x: centroid.x + (pt.x - centroid.x) * faceScale + additionalOffset,
@@ -1100,7 +1115,7 @@ function App() {
   return (
     <div className="app-container">
       <h1 className="logo">Billionaire Face $hrinker</h1>
-      <p className="subtitle">because they are lame, and should be shrunk 😊</p>
+      <p className="subtitle">because billionaires are lame, and should be shrunk 😊</p>
       <br></br>
       { !modelsLoaded ? (
         <p>Loading face models…</p>
@@ -1207,14 +1222,14 @@ function App() {
                     />
                   </label>
                   <label className="advanced-slider">
-                    <span className="advanced-slider-label">Left: {stretchLeft}</span>
+                    <span className="advanced-slider-label">Left: {-stretchLeft}</span>
                     <input
                       type="range"
                       min="-0.25"
                       max="0.25"
                       step="0.01"
-                      value={stretchLeft}
-                      onChange={e => setStretchLeft(parseFloat(e.target.value))}
+                      value={-stretchLeft}
+                      onChange={e => setStretchLeft(-parseFloat(e.target.value))}
                     />
                   </label>
                   <label className="advanced-slider">
@@ -1239,6 +1254,29 @@ function App() {
                       onChange={e => setFaceMatchThreshold(parseFloat(e.target.value))}
                     />
                   </label>
+                  <label className="advanced-slider">
+                    <span className="advanced-slider-label">Face L/R Angle Override: {faceAngleOverride ? "ON" : "OFF"}</span>
+                    <input
+                      type="checkbox"
+                      checked={faceAngleOverride}
+                      onChange={e => setFaceAngleOverride(e.target.checked)}
+                    />
+                  </label>
+                  {faceAngleOverride && (
+                    <label className="advanced-slider">
+                      <span className="advanced-slider-label">
+                        L/R Face Angle: {overriddenFaceAngle}
+                      </span>
+                      <input
+                        type="range"
+                        min="-1"
+                        max="1"
+                        step="0.01"
+                        value={overriddenFaceAngle}
+                        onChange={e => setOverriddenFaceAngle(parseFloat(e.target.value))}
+                      />
+                    </label>
+                  )}
                   <label className="advanced-slider">
                     <span className="advanced-slider-label">Hyper Mode (postprocessing): {hyperMode ? "ON" : "OFF"}</span>
                     <input
@@ -1281,7 +1319,7 @@ function App() {
             <h2>Contact</h2>
             <p>
               Bluesky:&nbsp;
-              <a href="https://bsky.app/profile/seelematic.bsky.social" target="_blank" rel="noopener noreferrer">
+              <a className="contact-link" href="https://bsky.app/profile/seelematic.bsky.social" target="_blank" rel="noopener noreferrer">
                 @seelematic.bsky.social
               </a>
             </p>

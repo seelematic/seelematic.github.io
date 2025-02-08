@@ -231,3 +231,9 @@ button:hover {
   text-align: right;
   margin-right: 0.5rem;
 }
+
+/* Force contact links to always be orange */
+.contact-link,
+.contact-link:visited {
+  color: orange !important;
+}
