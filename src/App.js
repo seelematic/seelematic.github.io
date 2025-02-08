@@ -489,6 +489,8 @@ function App() {
 
   // NEW: State to track if the final image is ready to be shown.
   const [finalImageReady, setFinalImageReady] = useState(false);
+  // NEW: State to hold the final image's data URL for rendering as an <img> element.
+  const [finalImageUrl, setFinalImageUrl] = useState(null);
 
   // NEW: States for Face L/R Angle Override.
   const [faceAngleOverride, setFaceAngleOverride] = useState(false);
@@ -656,8 +658,7 @@ function App() {
     setTargetImage(img);
     
     // Get the canvas ref and size it to the photo.
-    const canvas = canvasRef.current;
-    // Use the image's intrinsic dimensions.
+    const canvas = canvasRef.current || document.createElement('canvas');
     canvas.width = img.naturalWidth;
     canvas.height = img.naturalHeight;
     const ctx = canvas.getContext('2d');
@@ -700,7 +701,9 @@ function App() {
     setFinalImageReady(false);
     
     const img = targetImage;
-    const canvas = canvasRef.current;
+    // If canvasRef.current is null (for example, because the canvas is not rendered),
+    // create a temporary canvas for processing.
+    const canvas = canvasRef.current || document.createElement('canvas');
     canvas.width = img.width;
     canvas.height = img.height;
     const ctx = canvas.getContext('2d');
@@ -1106,6 +1109,9 @@ function App() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(finalCanvasOffscreen, 0, 0);
     setFinalImageReady(true);
+    // Convert the final canvas image to a data URL and store it.
+    const dataUrl = canvas.toDataURL("image/png");
+    setFinalImageUrl(dataUrl);
   };
 
   useEffect(() => {
@@ -1308,11 +1314,15 @@ function App() {
 
           <section>
             {!finalImageReady && generated && <p>Generating final image…</p>}
-            <canvas 
-              ref={canvasRef} 
-              className="face-canvas" 
-              style={{ display: finalImageReady ? 'block' : 'none' }} 
-            />
+            {finalImageUrl ? (
+              <img src={finalImageUrl} className="face-canvas" alt="Generated Face Shrinker" />
+            ) : (
+              <canvas 
+                ref={canvasRef} 
+                className="face-canvas" 
+                style={{ display: finalImageReady ? 'block' : 'none' }} 
+              />
+            )}
           </section>
 
           <section style={{ marginBottom: '1rem' }}>
