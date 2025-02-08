@@ -850,6 +850,10 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    document.title = "Billionaire Face Shrinker";
+  }, []);
+
   return (
     <div style={{ padding: '1rem', fontFamily: 'sans-serif' }}>
       <h1>Billionaire Face Shrinker</h1>
