@@ -857,7 +857,7 @@ function App() {
 
   return (
     <div className="app-container">
-      <h1 className="logo">Billionaire Face Shrinker</h1>
+      <h1 className="logo">Billionaire Face $hrinker</h1>
       <p className="subtitle">because they are deeply unserious people, and should be shrunk.</p>
       <br></br>
       { !modelsLoaded ? (
@@ -944,6 +944,16 @@ function App() {
               ref={canvasRef} 
               className="face-canvas"
             />
+          </section>
+
+          <section style={{ marginBottom: '1rem' }}>
+            <h2>Contact</h2>
+            <p>
+              Bluesky:&nbsp;
+              <a href="https://bsky.app/profile/seelematic.bsky.social" target="_blank" rel="noopener noreferrer">
+                @seelematic.bsky.social
+              </a>
+            </p>
           </section>
         </>
       )}
