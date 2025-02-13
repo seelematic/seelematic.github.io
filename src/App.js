@@ -442,6 +442,11 @@ function App() {
   const [faceMatchThreshold, setFaceMatchThreshold] = useState(0.55);
   // Use state to track if models are loaded and to store the descriptors for our target headshots.
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  // NEW: Create a ref to track modelsLoaded in real time.
+  const modelsLoadedRef = useRef(modelsLoaded);
+  useEffect(() => {
+    modelsLoadedRef.current = modelsLoaded;
+  }, [modelsLoaded]);
   const [faceTargets, setFaceTargets] = useState([]); // Each element is { descriptor, image }
   const [faceScale, setFaceScale] = useState(0.85);  // New state for final face scaling (default 0.9)
   
@@ -695,9 +700,26 @@ function App() {
 
   // UPDATED: Handler to generate the modified target photo using the stored targetImage.
   const handleGenerateModifiedPhoto = async () => {
+    // NEW: Wait until any pending face targets processing (from handleFaceTargetsChange) has completed.
+    await faceTargetsProcessingRef.current;
+
     // Clear any previous error message.
     setErrorMessage("");
-    
+
+    // If face models are not fully loaded, wait until they are.
+    if (!modelsLoadedRef.current) {
+      console.log("Face models not fully loaded yet. Waiting for models...");
+      await new Promise(resolve => {
+        const interval = setInterval(() => {
+          if (modelsLoadedRef.current) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 500);
+      });
+      console.log("Face models loaded. Continuing with generation.");
+    }
+
     // Use the target image if available, otherwise try to load a default image.
     let img = targetImage;
     if (!img) {
@@ -1346,6 +1368,12 @@ function App() {
               Bluesky:&nbsp;
               <a className="contact-link" href="https://bsky.app/profile/seelematic.bsky.social" target="_blank" rel="noopener noreferrer">
                 @seelematic.bsky.social
+              </a>
+            </p>
+            <p>
+              Feedback:&nbsp;
+              <a target="_blank" rel="noopener noreferrer">
+                billionairefaceshrink, at the email app that starts with a G
               </a>
             </p>
           </section>
