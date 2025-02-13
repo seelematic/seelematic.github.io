@@ -491,6 +491,8 @@ function App() {
   const [finalImageReady, setFinalImageReady] = useState(false);
   // NEW: State to hold the final image's data URL for rendering as an <img> element.
   const [finalImageUrl, setFinalImageUrl] = useState(null);
+  // NEW: State to hold error messages during generation.
+  const [errorMessage, setErrorMessage] = useState("");
 
   // NEW: States for Face L/R Angle Override.
   const [faceAngleOverride, setFaceAngleOverride] = useState(false);
@@ -693,24 +695,36 @@ function App() {
 
   // UPDATED: Handler to generate the modified target photo using the stored targetImage.
   const handleGenerateModifiedPhoto = async () => {
-    if (!targetImage) {
-      console.warn("No target image available to process");
-      return;
+    // Clear any previous error message.
+    setErrorMessage("");
+    
+    // Use the target image if available, otherwise try to load a default image.
+    let img = targetImage;
+    if (!img) {
+      if (selectedDefaultFaceFilenames.length === 1) {
+        const filename = selectedDefaultFaceFilenames[0];
+        img = new Image();
+        img.src = process.env.PUBLIC_URL + '/faces/' + filename;
+        await new Promise(resolve => { img.onload = resolve; });
+        setTargetImage(img); // Update state if needed.
+      } else {
+        setErrorMessage("You must either upload an image to be faceshrunk then select the billionaires whose faces to shrink in the image, or select a single billionaire from the list to faceshrink their Wikipedia headshot :)");
+        return;
+      }
     }
     
     setFinalImageReady(false);
     
-    const img = targetImage;
-    // If canvasRef.current is null (for example, because the canvas is not rendered),
+    // If canvasRef.current is null (e.g., because the canvas is not rendered),
     // create a temporary canvas for processing.
     const canvas = canvasRef.current || document.createElement('canvas');
     canvas.width = img.width;
     canvas.height = img.height;
     const ctx = canvas.getContext('2d');
-    
     // Optionally clear previous canvas content.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     // Redraw the original target photo.
+    // (Note: subsequent code now uses 'img' as the source image)
     ctx.drawImage(img, 0, 0, img.width, img.height);
     
     // Run face detection on the target image.
@@ -1313,7 +1327,8 @@ function App() {
           </section>
 
           <section>
-            {!finalImageReady && generated && <p>Generating final image…</p>}
+            {!finalImageReady && generated && errorMessage === "" && <p>Generating final image…</p>}
+            {errorMessage && <p className="errorMessage">{errorMessage}</p>}
             {finalImageUrl ? (
               <img src={finalImageUrl} className="face-canvas" alt="Generated Face Shrinker" />
             ) : (
